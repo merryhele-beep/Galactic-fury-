@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>GALACTIC FURY - Fixed</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #000; overflow: hidden; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: 'Courier New', monospace; }
+  canvas { image-rendering: pixelated; display: block; background: #000510; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 500;
+canvas.width = W; canvas.height = H;
+
+// ── SISTEMA DE TRANSPARENCIA CON PROTECCIÓN ────────────────────────────────
+function makeTransparent(img) {
+  try {
+    const tmpCanvas = document.createElement('canvas');
+    const tctx = tmpCanvas.getContext('2d');
+    tmpCanvas.width = img.width;
+    tmpCanvas.height = img.height;
+    tctx.drawImage(img, 0, 0);
+    
+    const imgData = tctx.getImageData(0, 0, tmpCanvas.width, tmpCanvas.height);
+    const data = imgData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      // Si es blanco (o muy cerca del blanco), hacerlo transparente
+      if (data[i] > 230 && data[i+1] > 230 && data[i+2] > 230) {
+        data[i + 3] = 0; 
+      }
+    }
+    tctx.putImageData(imgData, 0, 0);
+    return tmpCanvas;
+  } catch (e) {
+    console.warn("Error de CORS: No se pudo quitar el fondo. Usa un servidor local (Live Server).");
+    return img; // Devuelve la imagen original si falla
+  }
+}
+
+// ── CARGA DE ASSETS ────────────────────────────────────────────────────────
+let imgShip = new Image(); imgShip.src = 'ship.png';
+let imgEnm  = new Image(); imgEnm.src  = 'enemies.png';
+let loaded = 0;
+
+imgShip.onload = () => { imgShip = makeTransparent(imgShip); loaded++; };
+imgEnm.onload  = () => { imgEnm = makeTransparent(imgEnm); loaded++; };
+
+// ── JUGADOR Y HITBOXES MEJORADAS ──────────────────────────────────────────
+const pl = {
+  x: 80, y: 220, w: 64, h: 40,
+  // Hitbox: el área real que recibe daño (más pequeña que el dibujo)
+  hb: { w: 20, h: 16 }, 
+  spd: 6, hp: 5, inv: 0,
+  bullets: [], cooldown: 0, bank: 0, deathTimer: 0
+};
+
+const enms = [], eBullets = [], parts = [];
+let state = 1; // 1: Play
+let score = 0;
+
+// Función de colisión genérica y precisa
+function checkCol(r1, r2) {
+  return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x &&
+         r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
+}
+
+// ── LÓGICA DE JUEGO ────────────────────────────────────────────────────────
+function spawnEnemy() {
+  if (Math.random() < 0.03) {
+    enms.push({
+      x: W + 50, y: Math.random() * (H - 50),
+      w: 48, h: 40,
+      hb: { w: 30, h: 30 }, // Hitbox del enemigo
+      type: Math.floor(Math.random() * 3), // 3 tipos según tu enemies.png
+      hp: 1, frame: 0, spd: 2 + Math.random() * 3
+    });
+  }
+}
+
+const K = {};
+window.onkeydown = e => K[e.code] = true;
+window.onkeyup = e => K[e.code] = false;
+
+function update() {
+  if (pl.deathTimer > 0) return;
+
+  // Movimiento
+  if ((K.ArrowUp || K.KeyW) && pl.y > 0) pl.y -= pl.spd;
+  if ((K.ArrowDown || K.KeyS) && pl.y < H - pl.h) pl.y += pl.spd;
+  if ((K.ArrowLeft || K.KeyA) && pl.x > 0) pl.x -= pl.spd;
+  if ((K.ArrowRight || K.KeyD) && pl.x < W/2) pl.x += pl.spd;
+
+  // Disparo
+  if (pl.cooldown > 0) pl.cooldown--;
+  if (K.Space && pl.cooldown === 0) {
+    pl.bullets.push({ x: pl.x + pl.w, y: pl.y + pl.h / 2, w: 12, h: 4 });
+    pl.cooldown = 10;
+  }
+
+  // Actualizar Balas
+  pl.bullets.forEach((b, i) => {
+    b.x += 10;
+    if (b.x > W) pl.bullets.splice(i, 1);
+  });
+
+  // Actualizar Enemigos
+  spawnEnemy();
+  enms.forEach((e, i) => {
+    e.x -= e.spd;
+    e.frame += 0.1;
+
+    // Colisión Bala -> Enemigo
+    pl.bullets.forEach((b, bi) => {
+      const bulletRect = { x: b.x, y: b.y, w: b.w, h: b.h };
+      const enemyHitbox = { x: e.x + (e.w - e.hb.w)/2, y: e.y + (e.h - e.hb.h)/2, w: e.hb.w, h: e.hb.h };
+      
+      if (checkCol(bulletRect, enemyHitbox)) {
+        enms.splice(i, 1);
+        pl.bullets.splice(bi, 1);
+        score += 100;
+      }
+    });
+
+    // Colisión Enemigo -> Jugador
+    const playerHitbox = { x: pl.x + (pl.w - pl.hb.w)/2, y: pl.y + (pl.h - pl.hb.h)/2, w: pl.hb.w, h: pl.hb.h };
+    const enemyHitbox = { x: e.x + (e.w - e.hb.w)/2, y: e.y + (e.h - e.hb.h)/2, w: e.hb.w, h: e.hb.h };
+    
+    if (checkCol(playerHitbox, enemyHitbox)) {
+      enms.splice(i, 1);
+      pl.hp--;
+      if (pl.hp <= 0) console.log("Game Over");
+    }
+
+    if (e.x < -50) enms.splice(i, 1);
+  });
+}
+
+// ── DIBUJO ──────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  
+  if (loaded < 2) {
+    ctx.fillStyle = "white";
+    ctx.fillText("CARGANDO...", W/2 - 30, H/2);
+    return;
+  }
+
+  // Dibujar Jugador (Usando el primer frame de ship.png)
+  const sw = imgShip.width / 5; // Tu ship.png tiene 5 columnas
+  ctx.drawImage(imgShip, 0, 0, sw, imgShip.height, pl.x, pl.y, pl.w, pl.h);
+
+  // Dibujar Balas
+  ctx.fillStyle = "#ff0";
+  pl.bullets.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+  // Dibujar Enemigos (Basado en tu enemies.png)
+  const ew = imgEnm.width / 4;  // 4 columnas
+  const eh = imgEnm.height / 3; // 3 filas
+  enms.forEach(e => {
+    const frame = Math.floor(e.frame) % 2; // Animación de 2 frames
+    ctx.drawImage(imgEnm, e.type * ew, frame * eh, ew, eh, e.x, e.y, e.w, e.h);
+  });
+
+  // HUD
+  ctx.fillStyle = "white";
+  ctx.font = "20px Courier New";
+  ctx.fillText(`SCORE: ${score}`, 20, 30);
+  ctx.fillText(`VIDA: ${"❤️".repeat(pl.hp)}`, 20, 60);
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+loop();
+</script>
+</body>
+</html>
